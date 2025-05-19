@@ -21,6 +21,8 @@ let meanTarget = null;
 let isPlaying = false;
 let playInterval = null;
 let slider, label, leftBtn, rightBtn, playPauseBtn;
+let requestVersion = 0;
+let globalCache = {};
 
 function initScene() {
   scene = new THREE.Scene();
@@ -57,9 +59,17 @@ function initScene() {
   window.addEventListener('resize', resizeRendererToDisplaySize);
 }
 
-function createPointCloud(points, colors) {
-  if (pointCloud) scene.remove(pointCloud);
+function disposePointCloud() {
+  if (pointCloud) {
+    if (pointCloud.geometry) pointCloud.geometry.dispose();
+    if (pointCloud.material) pointCloud.material.dispose();
+    scene.remove(pointCloud);
+    pointCloud = null;
+  }
+}
 
+function createPointCloud(points, colors) {
+  disposePointCloud();
   const geometry = new THREE.BufferGeometry();
   geometry.setAttribute('position', new THREE.Float32BufferAttribute(points, 3));
   if (colors) {
@@ -115,55 +125,51 @@ function loadPointCloudAndColor(frameIdx, callback) {
     });
 }
 
-function preloadSceneFrames(sceneIdx, callback) {
-  const numFrames = SCENES[sceneIdx].numFrames;
-  let loaded = 0;
-  let frames = new Array(numFrames);
-  for (let i = 0; i < numFrames; ++i) {
-    loadPointCloudAndColor(i, (points, colors) => {
-      frames[i] = { points, colors };
-      loaded++;
-      if (loaded === numFrames) {
-        callback(frames);
-      }
-    });
-  }
-}
-
-function showPointCloudForFrame(frameIdx) {
-  if (loadedPointClouds[frameIdx]) {
-    const { points, colors } = loadedPointClouds[frameIdx];
+function showPointCloudForFrame(frameIdx, onFirstFrameLoaded) {
+  requestVersion++;
+  const thisRequest = requestVersion;
+  const sceneName = SCENES[currentSceneIdx].name;
+  if (!globalCache[sceneName]) globalCache[sceneName] = new Array(SCENES[currentSceneIdx].numFrames).fill(null);
+  if (globalCache[sceneName][frameIdx]) {
+    const { points, colors } = globalCache[sceneName][frameIdx];
+    loadedPointClouds[frameIdx] = { points, colors };
     createPointCloud(points, colors);
+    if (onFirstFrameLoaded) onFirstFrameLoaded();
   } else {
     loadPointCloudAndColor(frameIdx, (points, colors) => {
+      if (thisRequest !== requestVersion) return;
+      globalCache[sceneName][frameIdx] = { points, colors };
       loadedPointClouds[frameIdx] = { points, colors };
       createPointCloud(points, colors);
+      if (onFirstFrameLoaded) onFirstFrameLoaded();
     });
   }
 }
 
 function updateScene(newSceneIdx) {
+  requestVersion++;
   const shouldResume = isPlaying;
   pauseAnimation();
   currentSceneIdx = newSceneIdx;
   const numFrames = SCENES[currentSceneIdx].numFrames;
-  const slider = document.getElementById('timeSlider');
   slider.max = numFrames - 1;
   slider.value = 0;
   meanTarget = null;
+  // Use global cache if available
+  const sceneName = SCENES[currentSceneIdx].name;
+  if (!globalCache[sceneName]) globalCache[sceneName] = new Array(numFrames).fill(null);
+  loadedPointClouds = globalCache[sceneName];
   document.getElementById('loading-overlay').classList.remove('hide');
   slider.disabled = true;
   leftBtn.disabled = true;
   rightBtn.disabled = true;
   playPauseBtn.disabled = true;
-  preloadSceneFrames(currentSceneIdx, (frames) => {
-    loadedPointClouds = frames;
+  showPointCloudForFrame(0, () => {
     document.getElementById('loading-overlay').classList.add('hide');
     slider.disabled = false;
     leftBtn.disabled = false;
     rightBtn.disabled = false;
     playPauseBtn.disabled = false;
-    showPointCloudForFrame(0);
     if (shouldResume) playAnimation();
   });
 }
@@ -178,26 +184,33 @@ function playAnimation() {
   if (isPlaying) return;
   isPlaying = true;
   playPauseBtn.innerHTML = '&#10073;&#10073;'; // Pause icon
-  playInterval = setInterval(() => {
+
+  function advanceFrame() {
+    if (!isPlaying) return;
     let frame = parseInt(slider.value, 10);
     const maxFrame = SCENES[currentSceneIdx].numFrames - 1;
     if (frame < maxFrame) {
       slider.value = frame + 1;
       label.textContent = `Time: ${frame + 1}`;
-      showPointCloudForFrame(frame + 1);
+      showPointCloudForFrame(frame + 1, () => {
+        setTimeout(advanceFrame, 40); // ms per frame (faster)
+      });
     } else {
       // Move to next scene and keep playing
       const nextSceneIdx = (currentSceneIdx + 1) % SCENES.length;
       updateScene(nextSceneIdx);
       // playAnimation() will be called by updateScene if needed
     }
-  }, 40); // ms per frame (faster)
+  }
+
+  // Start advancing from the current frame
+  advanceFrame();
 }
 
 function pauseAnimation() {
   isPlaying = false;
   playPauseBtn.innerHTML = '&#9654;'; // Play icon
-  if (playInterval) clearInterval(playInterval);
+  // No interval to clear anymore
 }
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -218,21 +231,23 @@ document.addEventListener('DOMContentLoaded', () => {
   renderer.domElement.addEventListener('pointerdown', hideDragHint, { once: true });
   setTimeout(hideDragHint, 20000);
 
-  // Show loading overlay and preload first scene
+  // Show loading overlay and load first frame only
   document.getElementById('loading-overlay').classList.remove('hide');
+  // Use global cache if available
+  const sceneName = SCENES[currentSceneIdx].name;
+  if (!globalCache[sceneName]) globalCache[sceneName] = new Array(SCENES[currentSceneIdx].numFrames).fill(null);
+  loadedPointClouds = globalCache[sceneName];
   slider.disabled = true;
   leftBtn.disabled = true;
   rightBtn.disabled = true;
   playPauseBtn.disabled = true;
-  preloadSceneFrames(currentSceneIdx, (frames) => {
-    loadedPointClouds = frames;
+  showPointCloudForFrame(0, () => {
     document.getElementById('loading-overlay').classList.add('hide');
     slider.disabled = false;
     leftBtn.disabled = false;
     rightBtn.disabled = false;
     playPauseBtn.disabled = false;
-    showPointCloudForFrame(0);
-    playAnimation();
+    playAnimation(); // Auto-play on load
   });
 
   slider.max = SCENES[currentSceneIdx].numFrames - 1;
@@ -260,4 +275,4 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Pause animation if user interacts with slider or changes scene
   slider.addEventListener('input', pauseAnimation);
-}); 
+});
