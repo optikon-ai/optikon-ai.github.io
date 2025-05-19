@@ -1,0 +1,2 @@
+pointclouds/figure_1_pcs/*.bin filter=lfs diff=lfs merge=lfs -text
+pointclouds/figure_2_pcs/*.bin filter=lfs diff=lfs merge=lfs -text
