@@ -184,4 +184,21 @@ canvas {
 }
 #drag-hint.hide {
   opacity: 0;
+}
+#loading-overlay {
+  position: fixed;
+  left: 0; top: 0; right: 0; bottom: 0;
+  background: rgba(20,20,20,0.92);
+  color: #00aaff;
+  font-family: 'Orbitron', Arial, sans-serif;
+  font-size: 2rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+  transition: opacity 0.5s;
+}
+#loading-overlay.hide {
+  opacity: 0;
+  pointer-events: none;
 } 

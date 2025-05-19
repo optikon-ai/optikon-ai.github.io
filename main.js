@@ -10,9 +10,9 @@ import { TrackballControls } from 'https://unpkg.com/three@0.126.1/examples/jsm/
 
 let scene, camera, renderer, pointCloud, controls;
 const SCENES = [
-  { name: 'figure_1_pcs', numFrames: 92 },
-  { name: 'figure_2_pcs', numFrames: 144 }
-  // { name: 'tesla_0', numFrames: 144 },
+  { name: 'figure_1_pcs', numFrames: 92},
+  { name: 'figure_2_pcs', numFrames: 144}
+  // { name: 'tesla_0', numFrames: 144 }
   // { name: 'figure_3', numFrames: 80 }
 ];
 let currentSceneIdx = 1; // default to figure_2_pcs
@@ -97,18 +97,37 @@ function animate() {
 function loadPointCloudAndColor(frameIdx, callback) {
   const base = String(frameIdx).padStart(5, '0');
   const sceneFolder = `pointclouds/${SCENES[currentSceneIdx].name}`;
-  const pcPromise = fetch(`${sceneFolder}/pointcloud_${base}.bin`).then(r => r.arrayBuffer());
-  const colorPromise = fetch(`${sceneFolder}/rgb_${base}.bin`).then(r => r.arrayBuffer());
+  const pcPromise = fetch(`${sceneFolder}/pointcloud_${base}.bin`).then(r => r.ok ? r.arrayBuffer() : Promise.reject('Missing pointcloud'));
+  const colorPromise = fetch(`${sceneFolder}/rgb_${base}.bin`).then(r => r.ok ? r.arrayBuffer() : Promise.reject('Missing color'));
+  Promise.all([pcPromise, colorPromise])
+    .then(([pcBuffer, colorBuffer]) => {
+      const points = new Float32Array(pcBuffer);
+      const colorsUint8 = new Uint8Array(colorBuffer);
+      const colors = new Float32Array(colorsUint8.length);
+      for (let i = 0; i < colorsUint8.length; ++i) {
+        colors[i] = colorsUint8[i] / 255.0;
+      }
+      callback(points, colors);
+    })
+    .catch(err => {
+      console.error(`Failed to load frame ${frameIdx} of scene ${SCENES[currentSceneIdx].name}:`, err);
+      callback(null, null); // Still call callback so loading can finish
+    });
+}
 
-  Promise.all([pcPromise, colorPromise]).then(([pcBuffer, colorBuffer]) => {
-    const points = new Float32Array(pcBuffer);
-    const colorsUint8 = new Uint8Array(colorBuffer);
-    const colors = new Float32Array(colorsUint8.length);
-    for (let i = 0; i < colorsUint8.length; ++i) {
-      colors[i] = colorsUint8[i] / 255.0;
-    }
-    callback(points, colors);
-  });
+function preloadSceneFrames(sceneIdx, callback) {
+  const numFrames = SCENES[sceneIdx].numFrames;
+  let loaded = 0;
+  let frames = new Array(numFrames);
+  for (let i = 0; i < numFrames; ++i) {
+    loadPointCloudAndColor(i, (points, colors) => {
+      frames[i] = { points, colors };
+      loaded++;
+      if (loaded === numFrames) {
+        callback(frames);
+      }
+    });
+  }
 }
 
 function showPointCloudForFrame(frameIdx) {
@@ -132,11 +151,21 @@ function updateScene(newSceneIdx) {
   slider.max = numFrames - 1;
   slider.value = 0;
   meanTarget = null;
-  loadedPointClouds = new Array(numFrames).fill(null);
-  showPointCloudForFrame(0);
-  if (shouldResume) {
-    playAnimation();
-  }
+  document.getElementById('loading-overlay').classList.remove('hide');
+  slider.disabled = true;
+  leftBtn.disabled = true;
+  rightBtn.disabled = true;
+  playPauseBtn.disabled = true;
+  preloadSceneFrames(currentSceneIdx, (frames) => {
+    loadedPointClouds = frames;
+    document.getElementById('loading-overlay').classList.add('hide');
+    slider.disabled = false;
+    leftBtn.disabled = false;
+    rightBtn.disabled = false;
+    playPauseBtn.disabled = false;
+    showPointCloudForFrame(0);
+    if (shouldResume) playAnimation();
+  });
 }
 
 window.addEventListener('resize', () => {
@@ -189,6 +218,23 @@ document.addEventListener('DOMContentLoaded', () => {
   renderer.domElement.addEventListener('pointerdown', hideDragHint, { once: true });
   setTimeout(hideDragHint, 20000);
 
+  // Show loading overlay and preload first scene
+  document.getElementById('loading-overlay').classList.remove('hide');
+  slider.disabled = true;
+  leftBtn.disabled = true;
+  rightBtn.disabled = true;
+  playPauseBtn.disabled = true;
+  preloadSceneFrames(currentSceneIdx, (frames) => {
+    loadedPointClouds = frames;
+    document.getElementById('loading-overlay').classList.add('hide');
+    slider.disabled = false;
+    leftBtn.disabled = false;
+    rightBtn.disabled = false;
+    playPauseBtn.disabled = false;
+    showPointCloudForFrame(0);
+    playAnimation();
+  });
+
   slider.max = SCENES[currentSceneIdx].numFrames - 1;
   slider.addEventListener('input', (e) => {
     if (e.isTrusted) pauseAnimation(); // Only pause if user moved the slider
@@ -214,8 +260,4 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Pause animation if user interacts with slider or changes scene
   slider.addEventListener('input', pauseAnimation);
-
-  // Show the first frame by default
-  showPointCloudForFrame(0);
-  playAnimation();
 }); 
