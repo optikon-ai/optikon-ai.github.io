@@ -11,8 +11,9 @@ import { TrackballControls } from 'https://unpkg.com/three@0.126.1/examples/jsm/
 let scene, camera, renderer, pointCloud, controls;
 const SCENES = [
   { name: 'figure_1_pcs', numFrames: 92 },
-  { name: 'figure_2_pcs', numFrames: 144 },
-  { name: 'tesla_0', numFrames: 144 }
+  { name: 'figure_2_pcs', numFrames: 144 }
+  // { name: 'tesla_0', numFrames: 144 },
+  // { name: 'figure_3', numFrames: 80 }
 ];
 let currentSceneIdx = 1; // default to figure_2_pcs
 let loadedPointClouds = new Array(SCENES[currentSceneIdx].numFrames).fill(null);
