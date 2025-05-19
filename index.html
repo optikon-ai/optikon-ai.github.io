@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>3D Point Cloud Visualizer</title>
+  <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body style="display: flex; flex-direction: column; height: 100vh; margin: 0; background: #111;">
+  <div id="title">Optikon</div>
+  <div id="subtitle">We provide foundational 3D perception models to help robots learn from humans.</div>
+  <div id="threejs-container" style="flex: 1; position: relative; min-height: 0;"></div>
+  <div id="drag-hint">Drag to rotate &middot; Scroll to zoom</div>
+  <div id="slider-container" style="width:540px; margin: 24px auto 24px auto; z-index:20; background: transparent; display: flex; align-items: center; justify-content: center; gap: 16px;">
+    <button id="sceneLeft" class="arrow-btn" title="Previous scene">&#8592;</button>
+    <button id="playPauseBtn" class="play-btn" title="Play/Pause">&#9654;</button>
+    <input type="range" id="timeSlider" min="0" max="143" value="0" style="width:100%;">
+    <button id="sceneRight" class="arrow-btn" title="Next scene">&#8594;</button>
+  </div>
+  <div id="sliderLabel" style="color:white;text-align:center;margin-top:4px;">Time: 0</div>
+  <!-- File input removed: point cloud loads automatically from pointcloud.csv -->
+  <script type="module" src="main.js"></script>
+</body>
+</html> 
