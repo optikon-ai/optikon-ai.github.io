@@ -10,13 +10,13 @@ import { TrackballControls } from 'https://unpkg.com/three@0.126.1/examples/jsm/
 
 let scene, camera, renderer, pointCloud, controls;
 const SCENES = [
-  { name: 'tesla_0', numFrames: 144 }
-  // { name: 'figure_1_pcs', numFrames: 92},
-  // { name: 'figure_2_pcs', numFrames: 144},
-  // { name: 'figure_3', numFrames: 80 }
+  'tesla_0'
+  // 'figure_1_pcs',
+  // 'figure_2_pcs',
+  // 'figure_3'
 ];
-let currentSceneIdx = 0; // default to figure_2_pcs
-let loadedPointClouds = new Array(SCENES[currentSceneIdx].numFrames).fill(null);
+let currentSceneIdx = 0;
+let loadedPointClouds = [];
 let meanTarget = null;
 let isPlaying = false;
 let playInterval = null;
@@ -134,10 +134,10 @@ function denormalizePoints(pointsUint16, minBounds, maxBounds) {
 
 async function loadPointCloudAndColor(frameIdx, callback) {
   const base = String(frameIdx).padStart(5, '0');
-  const sceneFolder = `pointclouds/${SCENES[currentSceneIdx].name}`;
+  const sceneFolder = `pointclouds/${SCENES[currentSceneIdx]}`;
   
   try {
-    const metadata = await loadSceneMetadata(SCENES[currentSceneIdx].name);
+    const metadata = await loadSceneMetadata(SCENES[currentSceneIdx]);
     const pcPromise = fetch(`${sceneFolder}/pointcloud_${base}.bin`).then(r => r.ok ? r.arrayBuffer() : Promise.reject('Missing pointcloud'));
     const colorPromise = fetch(`${sceneFolder}/rgb_${base}.bin`).then(r => r.ok ? r.arrayBuffer() : Promise.reject('Missing color'));
     
@@ -153,7 +153,7 @@ async function loadPointCloudAndColor(frameIdx, callback) {
     
     callback(points, colors);
   } catch (err) {
-    console.error(`Failed to load frame ${frameIdx} of scene ${SCENES[currentSceneIdx].name}:`, err);
+    console.error(`Failed to load frame ${frameIdx} of scene ${SCENES[currentSceneIdx]}:`, err);
     callback(null, null);
   }
 }
@@ -161,21 +161,31 @@ async function loadPointCloudAndColor(frameIdx, callback) {
 function showPointCloudForFrame(frameIdx, onFirstFrameLoaded) {
   requestVersion++;
   const thisRequest = requestVersion;
-  const sceneName = SCENES[currentSceneIdx].name;
-  if (!globalCache[sceneName]) globalCache[sceneName] = new Array(SCENES[currentSceneIdx].numFrames).fill(null);
-  if (globalCache[sceneName][frameIdx]) {
-    const { points, colors } = globalCache[sceneName][frameIdx];
-    loadedPointClouds[frameIdx] = { points, colors };
-    createPointCloud(points, colors);
-    if (onFirstFrameLoaded) onFirstFrameLoaded();
+  const sceneName = SCENES[currentSceneIdx];
+  if (!globalCache[sceneName]) {
+    loadSceneMetadata(sceneName).then(metadata => {
+      globalCache[sceneName] = new Array(metadata.numFrames).fill(null);
+      loadFrame();
+    });
   } else {
-    loadPointCloudAndColor(frameIdx, (points, colors) => {
-      if (thisRequest !== requestVersion) return;
-      globalCache[sceneName][frameIdx] = { points, colors };
+    loadFrame();
+  }
+
+  function loadFrame() {
+    if (globalCache[sceneName][frameIdx]) {
+      const { points, colors } = globalCache[sceneName][frameIdx];
       loadedPointClouds[frameIdx] = { points, colors };
       createPointCloud(points, colors);
       if (onFirstFrameLoaded) onFirstFrameLoaded();
-    });
+    } else {
+      loadPointCloudAndColor(frameIdx, (points, colors) => {
+        if (thisRequest !== requestVersion) return;
+        globalCache[sceneName][frameIdx] = { points, colors };
+        loadedPointClouds[frameIdx] = { points, colors };
+        createPointCloud(points, colors);
+        if (onFirstFrameLoaded) onFirstFrameLoaded();
+      });
+    }
   }
 }
 
@@ -186,14 +196,14 @@ function updateScene(newSceneIdx) {
   currentSceneIdx = newSceneIdx;
   
   // Load metadata first to get correct frame count
-  loadSceneMetadata(SCENES[currentSceneIdx].name).then(metadata => {
+  loadSceneMetadata(SCENES[currentSceneIdx]).then(metadata => {
     const numFrames = metadata.numFrames;
     slider.max = numFrames - 1;
     slider.value = 0;
     meanTarget = null;
     
     // Use global cache if available
-    const sceneName = SCENES[currentSceneIdx].name;
+    const sceneName = SCENES[currentSceneIdx];
     if (!globalCache[sceneName]) globalCache[sceneName] = new Array(numFrames).fill(null);
     loadedPointClouds = globalCache[sceneName];
     
@@ -225,10 +235,12 @@ function playAnimation() {
   isPlaying = true;
   playPauseBtn.innerHTML = '&#10073;&#10073;'; // Pause icon
 
-  function advanceFrame() {
+  async function advanceFrame() {
     if (!isPlaying) return;
     let frame = parseInt(slider.value, 10);
-    const maxFrame = SCENES[currentSceneIdx].numFrames - 1;
+    const metadata = await loadSceneMetadata(SCENES[currentSceneIdx]);
+    const maxFrame = metadata.numFrames - 1;
+    
     if (frame < maxFrame) {
       slider.value = frame + 1;
       label.textContent = `Time: ${frame + 1}`;
@@ -253,10 +265,12 @@ function pauseAnimation() {
   // No interval to clear anymore
 }
 
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
+  // Initialize scene first
   initScene();
   animate();
 
+  // Get UI elements
   slider = document.getElementById('timeSlider');
   label = document.getElementById('sliderLabel');
   leftBtn = document.getElementById('sceneLeft');
@@ -271,26 +285,50 @@ document.addEventListener('DOMContentLoaded', () => {
   renderer.domElement.addEventListener('pointerdown', hideDragHint, { once: true });
   setTimeout(hideDragHint, 20000);
 
-  // Show loading overlay and load first frame only
+  // Show loading overlay
   document.getElementById('loading-overlay').classList.remove('hide');
-  // Use global cache if available
-  const sceneName = SCENES[currentSceneIdx].name;
-  if (!globalCache[sceneName]) globalCache[sceneName] = new Array(SCENES[currentSceneIdx].numFrames).fill(null);
-  loadedPointClouds = globalCache[sceneName];
-  slider.disabled = true;
-  leftBtn.disabled = true;
-  rightBtn.disabled = true;
-  playPauseBtn.disabled = true;
-  showPointCloudForFrame(0, () => {
+  
+  try {
+    // Load metadata first
+    const sceneName = SCENES[currentSceneIdx];
+    const metadata = await loadSceneMetadata(sceneName);
+    
+    // Initialize cache and UI
+    if (!globalCache[sceneName]) {
+      globalCache[sceneName] = new Array(metadata.numFrames).fill(null);
+    }
+    loadedPointClouds = globalCache[sceneName];
+    
+    slider.max = metadata.numFrames - 1;
+    slider.value = 0;
+    label.textContent = 'Time: 0';
+    
+    // Disable UI while loading
+    slider.disabled = true;
+    leftBtn.disabled = true;
+    rightBtn.disabled = true;
+    playPauseBtn.disabled = true;
+    
+    // Load first frame
+    await new Promise((resolve) => {
+      showPointCloudForFrame(0, resolve);
+    });
+    
+    // Enable UI after first frame is loaded
     document.getElementById('loading-overlay').classList.add('hide');
     slider.disabled = false;
     leftBtn.disabled = false;
     rightBtn.disabled = false;
     playPauseBtn.disabled = false;
-    playAnimation(); // Auto-play on load
-  });
+    
+    // Start animation
+    playAnimation();
+  } catch (err) {
+    console.error('Failed to initialize scene:', err);
+    document.getElementById('loading-overlay').classList.add('hide');
+  }
 
-  slider.max = SCENES[currentSceneIdx].numFrames - 1;
+  // Set up event listeners
   slider.addEventListener('input', (e) => {
     if (e.isTrusted) pauseAnimation(); // Only pause if user moved the slider
     const frame = parseInt(e.target.value, 10);
@@ -301,6 +339,7 @@ document.addEventListener('DOMContentLoaded', () => {
   leftBtn.addEventListener('click', () => {
     updateScene((currentSceneIdx - 1 + SCENES.length) % SCENES.length);
   });
+  
   rightBtn.addEventListener('click', () => {
     updateScene((currentSceneIdx + 1) % SCENES.length);
   });
@@ -312,7 +351,4 @@ document.addEventListener('DOMContentLoaded', () => {
       playAnimation();
     }
   });
-
-  // Pause animation if user interacts with slider or changes scene
-  slider.addEventListener('input', pauseAnimation);
 });
