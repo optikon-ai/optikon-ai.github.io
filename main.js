@@ -1,18 +1,12 @@
-// import * as THREE from 'https://unpkg.com/three@0.152.2/build/three.module.js';
-// import { OrbitControls } from 'https://unpkg.com/three@0.152.2/examples/jsm/controls/OrbitControls.js';
-
-// import * as THREE from 'https://unpkg.com/three@0.152.2/build/three.module.js';
-// import { OrbitControls } from 'https://unpkg.com/three@0.152.2/examples/jsm/controls/OrbitControls.js';
-
 import * as THREE from 'https://unpkg.com/three@0.126.1/build/three.module.js';
 import { OrbitControls } from 'https://unpkg.com/three@0.126.1/examples/jsm/controls/OrbitControls.js';
 import { TrackballControls } from 'https://unpkg.com/three@0.126.1/examples/jsm/controls/TrackballControls.js';
 
 let scene, camera, renderer, pointCloud, controls;
 const SCENES = [
-  'tesla_0',
+  'tesla_0'
   // 'figure_1_pcs',
-  'figure_2_pcs'
+  // 'figure_2_pcs',
   // 'figure_3'
 ];
 let currentSceneIdx = 0;
@@ -140,24 +134,85 @@ async function loadPointCloudAndColor(frameIdx, callback) {
   
   try {
     const metadata = await loadSceneMetadata(SCENES[currentSceneIdx]);
-    const pcPromise = fetch(`${sceneFolder}/pointcloud_${base}.bin`).then(r => r.ok ? r.arrayBuffer() : Promise.reject('Missing pointcloud'));
-    const colorPromise = fetch(`${sceneFolder}/rgb_${base}.bin`).then(r => r.ok ? r.arrayBuffer() : Promise.reject('Missing color'));
     
-    const [pcBuffer, colorBuffer] = await Promise.all([pcPromise, colorPromise]);
-    const pointsUint16 = new Uint16Array(pcBuffer);
-    const points = denormalizePoints(pointsUint16, metadata.minBounds, metadata.maxBounds);
+    // Load point cloud and color images
+    const [pcResponse, colorResponse] = await Promise.all([
+      fetch(`${sceneFolder}/pointcloud_${base}.png`),
+      fetch(`${sceneFolder}/rgb_${base}.png`)
+    ]);
     
-    const colorsUint8 = new Uint8Array(colorBuffer);
-    const colors = new Float32Array(colorsUint8.length);
-    for (let i = 0; i < colorsUint8.length; ++i) {
-      colors[i] = colorsUint8[i] / 255.0;
+    const [pcArrayBuffer, colorArrayBuffer] = await Promise.all([
+      pcResponse.arrayBuffer(),
+      colorResponse.arrayBuffer()
+    ]);
+    
+    // Decode PNGs using UPNG
+    const pcPNG = UPNG.decode(pcArrayBuffer);
+    const colorPNG = UPNG.decode(colorArrayBuffer);
+    
+    const numPoints = pcPNG.width * pcPNG.height;
+    
+    // Get uint16 data directly from PNG
+    const rawData = new Uint8Array(pcPNG.data.buffer);
+    const uint16Data = new Uint16Array(numPoints * 3); // 3 channels (x,y,z) as uint16
+    const colorData = new Uint8Array(colorPNG.data.buffer);
+    
+    // Process uint16 values
+    for (let i = 0; i < numPoints * 3; i++) {
+      const offset = i * 2;
+      // Big-endian (high byte first)
+      uint16Data[i] = ((rawData[offset] << 8) | rawData[offset + 1]);
     }
     
-    callback(points, colors);
+    const points = new Float32Array(numPoints * 3);
+    const colors = new Float32Array(numPoints * 3);
+    let validPointCount = 0;
+    
+    for (let i = 0; i < numPoints; i++) {
+      const pcOffset = i * 3; // 3 channels (x,y,z) as uint16
+      const colorOffset = i * 4; // 4 channels (r,g,b,valid) as uint8
+      
+      // Read uint16 values - swap x and z to match Python order
+      const z = uint16Data[pcOffset];     // was x
+      const y = uint16Data[pcOffset + 1]; // y stays the same
+      const x = uint16Data[pcOffset + 2]; // was z
+      const valid = colorData[colorOffset + 3]; // validity is now in the 4th channel of color image
+      
+      if (valid > 0) {
+        // Denormalize coordinates
+        points[validPointCount * 3] = metadata.minBounds[0] + (x / 65535) * (metadata.maxBounds[0] - metadata.minBounds[0]);
+        points[validPointCount * 3 + 1] = metadata.minBounds[1] + (y / 65535) * (metadata.maxBounds[1] - metadata.minBounds[1]);
+        points[validPointCount * 3 + 2] = metadata.minBounds[2] + (z / 65535) * (metadata.maxBounds[2] - metadata.minBounds[2]);
+        
+        // Apply colors
+        colors[validPointCount * 3] = colorData[colorOffset] / 255.0;     // R
+        colors[validPointCount * 3 + 1] = colorData[colorOffset + 1] / 255.0; // G
+        colors[validPointCount * 3 + 2] = colorData[colorOffset + 2] / 255.0; // B
+        
+        validPointCount++;
+      }
+    }
+    
+    // Trim arrays to actual size
+    const finalPoints = points.slice(0, validPointCount * 3);
+    const finalColors = colors.slice(0, validPointCount * 3);
+    
+    callback(finalPoints, finalColors);
   } catch (err) {
     console.error(`Failed to load frame ${frameIdx} of scene ${SCENES[currentSceneIdx]}:`, err);
     callback(null, null);
   }
+}
+
+// Helper function to load images
+function loadImage(src) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.crossOrigin = 'anonymous'; // Required for loading from different domains
+    img.onload = () => resolve(img);
+    img.onerror = reject;
+    img.src = src;
+  });
 }
 
 async function preloadFrames(startFrame, numFrames) {
