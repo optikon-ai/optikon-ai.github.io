@@ -10,12 +10,12 @@ import { TrackballControls } from 'https://unpkg.com/three@0.126.1/examples/jsm/
 
 let scene, camera, renderer, pointCloud, controls;
 const SCENES = [
-  { name: 'figure_1_pcs', numFrames: 92},
-  { name: 'figure_2_pcs', numFrames: 144},
-  { name: 'tesla_0', numFrames: 144 },
-  { name: 'figure_3', numFrames: 80 }
+  { name: 'tesla_0', numFrames: 144 }
+  // { name: 'figure_1_pcs', numFrames: 92},
+  // { name: 'figure_2_pcs', numFrames: 144},
+  // { name: 'figure_3', numFrames: 80 }
 ];
-let currentSceneIdx = 1; // default to figure_2_pcs
+let currentSceneIdx = 0; // default to figure_2_pcs
 let loadedPointClouds = new Array(SCENES[currentSceneIdx].numFrames).fill(null);
 let meanTarget = null;
 let isPlaying = false;
@@ -23,6 +23,7 @@ let playInterval = null;
 let slider, label, leftBtn, rightBtn, playPauseBtn;
 let requestVersion = 0;
 let globalCache = {};
+let sceneMetadata = {}; // Store metadata for each scene
 
 function initScene() {
   scene = new THREE.Scene();
@@ -104,25 +105,57 @@ function animate() {
   renderer.render(scene, camera);
 }
 
-function loadPointCloudAndColor(frameIdx, callback) {
+async function loadSceneMetadata(sceneName) {
+  if (sceneMetadata[sceneName]) return sceneMetadata[sceneName];
+  
+  const response = await fetch(`pointclouds/${sceneName}/metadata.txt`);
+  const text = await response.text();
+  const lines = text.trim().split('\n');
+  
+  const metadata = {
+    numFrames: parseInt(lines[0]),
+    minBounds: lines[1].split(' ').map(Number),
+    maxBounds: lines[2].split(' ').map(Number)
+  };
+  
+  sceneMetadata[sceneName] = metadata;
+  return metadata;
+}
+
+function denormalizePoints(pointsUint16, minBounds, maxBounds) {
+  const points = new Float32Array(pointsUint16.length);
+  for (let i = 0; i < pointsUint16.length; i += 3) {
+    points[i] = minBounds[0] + (pointsUint16[i] / 65535) * (maxBounds[0] - minBounds[0]);
+    points[i + 1] = minBounds[1] + (pointsUint16[i + 1] / 65535) * (maxBounds[1] - minBounds[1]);
+    points[i + 2] = minBounds[2] + (pointsUint16[i + 2] / 65535) * (maxBounds[2] - minBounds[2]);
+  }
+  return points;
+}
+
+async function loadPointCloudAndColor(frameIdx, callback) {
   const base = String(frameIdx).padStart(5, '0');
   const sceneFolder = `pointclouds/${SCENES[currentSceneIdx].name}`;
-  const pcPromise = fetch(`${sceneFolder}/pointcloud_${base}.bin`).then(r => r.ok ? r.arrayBuffer() : Promise.reject('Missing pointcloud'));
-  const colorPromise = fetch(`${sceneFolder}/rgb_${base}.bin`).then(r => r.ok ? r.arrayBuffer() : Promise.reject('Missing color'));
-  Promise.all([pcPromise, colorPromise])
-    .then(([pcBuffer, colorBuffer]) => {
-      const points = new Float32Array(pcBuffer);
-      const colorsUint8 = new Uint8Array(colorBuffer);
-      const colors = new Float32Array(colorsUint8.length);
-      for (let i = 0; i < colorsUint8.length; ++i) {
-        colors[i] = colorsUint8[i] / 255.0;
-      }
-      callback(points, colors);
-    })
-    .catch(err => {
-      console.error(`Failed to load frame ${frameIdx} of scene ${SCENES[currentSceneIdx].name}:`, err);
-      callback(null, null); // Still call callback so loading can finish
-    });
+  
+  try {
+    const metadata = await loadSceneMetadata(SCENES[currentSceneIdx].name);
+    const pcPromise = fetch(`${sceneFolder}/pointcloud_${base}.bin`).then(r => r.ok ? r.arrayBuffer() : Promise.reject('Missing pointcloud'));
+    const colorPromise = fetch(`${sceneFolder}/rgb_${base}.bin`).then(r => r.ok ? r.arrayBuffer() : Promise.reject('Missing color'));
+    
+    const [pcBuffer, colorBuffer] = await Promise.all([pcPromise, colorPromise]);
+    const pointsUint16 = new Uint16Array(pcBuffer);
+    const points = denormalizePoints(pointsUint16, metadata.minBounds, metadata.maxBounds);
+    
+    const colorsUint8 = new Uint8Array(colorBuffer);
+    const colors = new Float32Array(colorsUint8.length);
+    for (let i = 0; i < colorsUint8.length; ++i) {
+      colors[i] = colorsUint8[i] / 255.0;
+    }
+    
+    callback(points, colors);
+  } catch (err) {
+    console.error(`Failed to load frame ${frameIdx} of scene ${SCENES[currentSceneIdx].name}:`, err);
+    callback(null, null);
+  }
 }
 
 function showPointCloudForFrame(frameIdx, onFirstFrameLoaded) {
@@ -151,26 +184,33 @@ function updateScene(newSceneIdx) {
   const shouldResume = isPlaying;
   pauseAnimation();
   currentSceneIdx = newSceneIdx;
-  const numFrames = SCENES[currentSceneIdx].numFrames;
-  slider.max = numFrames - 1;
-  slider.value = 0;
-  meanTarget = null;
-  // Use global cache if available
-  const sceneName = SCENES[currentSceneIdx].name;
-  if (!globalCache[sceneName]) globalCache[sceneName] = new Array(numFrames).fill(null);
-  loadedPointClouds = globalCache[sceneName];
-  document.getElementById('loading-overlay').classList.remove('hide');
-  slider.disabled = true;
-  leftBtn.disabled = true;
-  rightBtn.disabled = true;
-  playPauseBtn.disabled = true;
-  showPointCloudForFrame(0, () => {
-    document.getElementById('loading-overlay').classList.add('hide');
-    slider.disabled = false;
-    leftBtn.disabled = false;
-    rightBtn.disabled = false;
-    playPauseBtn.disabled = false;
-    if (shouldResume) playAnimation();
+  
+  // Load metadata first to get correct frame count
+  loadSceneMetadata(SCENES[currentSceneIdx].name).then(metadata => {
+    const numFrames = metadata.numFrames;
+    slider.max = numFrames - 1;
+    slider.value = 0;
+    meanTarget = null;
+    
+    // Use global cache if available
+    const sceneName = SCENES[currentSceneIdx].name;
+    if (!globalCache[sceneName]) globalCache[sceneName] = new Array(numFrames).fill(null);
+    loadedPointClouds = globalCache[sceneName];
+    
+    document.getElementById('loading-overlay').classList.remove('hide');
+    slider.disabled = true;
+    leftBtn.disabled = true;
+    rightBtn.disabled = true;
+    playPauseBtn.disabled = true;
+    
+    showPointCloudForFrame(0, () => {
+      document.getElementById('loading-overlay').classList.add('hide');
+      slider.disabled = false;
+      leftBtn.disabled = false;
+      rightBtn.disabled = false;
+      playPauseBtn.disabled = false;
+      if (shouldResume) playAnimation();
+    });
   });
 }
 
