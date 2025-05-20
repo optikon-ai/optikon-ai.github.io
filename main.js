@@ -20,6 +20,9 @@ let globalCache = {};
 let sceneMetadata = {}; // Store metadata for each scene
 const PRELOAD_FRAMES = 10; // Number of frames to preload ahead
 let preloadQueue = []; // Queue for managing preload requests
+let imageCanvas, imageCtx; // Canvas for rendering images
+let currentImageBitmap = null; // Store the current image bitmap
+let imageCache = {}; // Cache for image bitmaps
 
 function initScene() {
   scene = new THREE.Scene();
@@ -54,6 +57,20 @@ function initScene() {
   controls.maxPolarAngle = 2 * Math.PI;
 
   window.addEventListener('resize', resizeRendererToDisplaySize);
+
+  // Initialize image canvas
+  imageCanvas = document.getElementById('imageCanvas');
+  imageCtx = imageCanvas.getContext('2d', { alpha: false }); // Disable alpha for better performance
+  
+  // Set canvas size to match container
+  function resizeCanvas() {
+    const container = document.getElementById('canvas-container');
+    imageCanvas.width = container.clientWidth;
+    imageCanvas.height = container.clientHeight;
+  }
+  
+  resizeCanvas();
+  window.addEventListener('resize', resizeCanvas);
 }
 
 function disposePointCloud() {
@@ -150,6 +167,33 @@ async function loadPointCloudAndColor(frameIdx, callback) {
     const pcPNG = UPNG.decode(pcArrayBuffer);
     const colorPNG = UPNG.decode(colorArrayBuffer);
     
+    // Create ImageData from colorPNG
+    const expectedLength = colorPNG.width * colorPNG.height * 4;
+    // console.log('Expected data length:', expectedLength);
+    // console.log('Source data length:', colorPNG.data.length);
+    
+    const rgbaData = new Uint8ClampedArray(expectedLength);
+    // Copy only the expected amount of data
+    for (let i = 0; i < expectedLength; i++) {
+      rgbaData[i] = colorPNG.data[i];
+    }
+    // Set all alpha values to 255 (fully opaque)
+    for (let i = 3; i < expectedLength; i += 4) {
+      rgbaData[i] = 255;
+    }
+    
+    // console.log('Image dimensions:', colorPNG.width, 'x', colorPNG.height);
+    // console.log('RGBA array length:', rgbaData.length);
+    
+    const imageData = new ImageData(rgbaData, colorPNG.width, colorPNG.height);
+    const imageBitmap = await createImageBitmap(imageData);
+    
+    // Store the image bitmap in the cache
+    if (!imageCache[SCENES[currentSceneIdx]]) {
+      imageCache[SCENES[currentSceneIdx]] = new Array(metadata.numFrames).fill(null);
+    }
+    imageCache[SCENES[currentSceneIdx]][frameIdx] = imageBitmap;
+    
     const numPoints = pcPNG.width * pcPNG.height;
     
     // Get uint16 data directly from PNG
@@ -204,6 +248,34 @@ async function loadPointCloudAndColor(frameIdx, callback) {
   }
 }
 
+function renderImageToCanvas(imageBitmap) {
+  if (!imageBitmap || !imageCtx) return;
+  
+  // Calculate aspect ratio preserving dimensions
+  const canvasAspect = imageCanvas.width / imageCanvas.height;
+  const imageAspect = imageBitmap.width / imageBitmap.height;
+  
+  let drawWidth, drawHeight, offsetX = 0, offsetY = 0;
+  
+  if (canvasAspect > imageAspect) {
+    // Canvas is wider than image
+    drawHeight = imageCanvas.height;
+    drawWidth = drawHeight * imageAspect;
+    offsetX = (imageCanvas.width - drawWidth) / 2;
+  } else {
+    // Canvas is taller than image
+    drawWidth = imageCanvas.width;
+    drawHeight = drawWidth / imageAspect;
+    offsetY = (imageCanvas.height - drawHeight) / 2;
+  }
+  
+  // Only clear the area where we'll draw the new image
+  imageCtx.clearRect(offsetX, offsetY, drawWidth, drawHeight);
+  
+  // Draw the new image
+  imageCtx.drawImage(imageBitmap, offsetX, offsetY, drawWidth, drawHeight);
+}
+
 // Helper function to load images
 function loadImage(src) {
   return new Promise((resolve, reject) => {
@@ -248,14 +320,55 @@ async function preloadFrames(startFrame, numFrames) {
   preloadQueue.push(Promise.all(loadPromises));
 }
 
+async function loadImageForFrame(frameIdx, sceneName) {
+  const base = String(frameIdx).padStart(5, '0');
+  const sceneFolder = `pointclouds/${sceneName}`;
+  
+  try {
+    const colorResponse = await fetch(`${sceneFolder}/rgb_${base}.png`);
+    const colorArrayBuffer = await colorResponse.arrayBuffer();
+    const colorPNG = UPNG.decode(colorArrayBuffer);
+    
+    // Create ImageData from colorPNG
+    const expectedLength = colorPNG.width * colorPNG.height * 4;
+    console.log('Expected data length:', expectedLength);
+    console.log('Source data length:', colorPNG.data.length);
+    
+    const rgbaData = new Uint8ClampedArray(expectedLength);
+    // Copy only the expected amount of data
+    for (let i = 0; i < expectedLength; i++) {
+      rgbaData[i] = colorPNG.data[i];
+    }
+    // Set all alpha values to 255 (fully opaque)
+    for (let i = 3; i < expectedLength; i += 4) {
+      rgbaData[i] = 255;
+    }
+    
+    console.log('Image dimensions:', colorPNG.width, 'x', colorPNG.height);
+    console.log('RGBA array length:', rgbaData.length);
+    
+    const imageData = new ImageData(rgbaData, colorPNG.width, colorPNG.height);
+    return await createImageBitmap(imageData);
+  } catch (err) {
+    console.error(`Failed to load image for frame ${frameIdx}:`, err);
+    return null;
+  }
+}
+
 function showPointCloudForFrame(frameIdx, onFirstFrameLoaded) {
   requestVersion++;
   const thisRequest = requestVersion;
   const sceneName = SCENES[currentSceneIdx];
   
+  // Initialize caches if they don't exist
   if (!globalCache[sceneName]) {
     loadSceneMetadata(sceneName).then(metadata => {
-      globalCache[sceneName] = new Array(metadata.numFrames).fill(null);
+      if (!globalCache[sceneName]) {
+        globalCache[sceneName] = new Array(metadata.numFrames).fill(null);
+      }
+      if (!imageCache[sceneName]) {
+        imageCache[sceneName] = new Array(metadata.numFrames).fill(null);
+      }
       loadFrame();
     });
   } else {
@@ -263,6 +376,11 @@ function showPointCloudForFrame(frameIdx, onFirstFrameLoaded) {
   }
 
   function loadFrame() {
+    // Always try to render the image first, whether cached or not
+    if (imageCache[sceneName]?.[frameIdx]) {
+      renderImageToCanvas(imageCache[sceneName][frameIdx]);
+    }
+
     if (globalCache[sceneName][frameIdx]) {
       const { points, colors } = globalCache[sceneName][frameIdx];
       loadedPointClouds[frameIdx] = { points, colors };
@@ -303,9 +421,14 @@ function updateScene(newSceneIdx) {
     slider.value = 0;
     meanTarget = null;
     
-    // Use global cache if available
+    // Initialize caches for the new scene
     const sceneName = SCENES[currentSceneIdx];
-    if (!globalCache[sceneName]) globalCache[sceneName] = new Array(numFrames).fill(null);
+    if (!globalCache[sceneName]) {
+      globalCache[sceneName] = new Array(numFrames).fill(null);
+    }
+    if (!imageCache[sceneName]) {
+      imageCache[sceneName] = new Array(numFrames).fill(null);
+    }
     loadedPointClouds = globalCache[sceneName];
     
     document.getElementById('loading-overlay').classList.remove('hide');
