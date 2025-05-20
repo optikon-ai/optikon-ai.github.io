@@ -24,6 +24,8 @@ let slider, label, leftBtn, rightBtn, playPauseBtn;
 let requestVersion = 0;
 let globalCache = {};
 let sceneMetadata = {}; // Store metadata for each scene
+const PRELOAD_FRAMES = 10; // Number of frames to preload ahead
+let preloadQueue = []; // Queue for managing preload requests
 
 function initScene() {
   scene = new THREE.Scene();
@@ -158,10 +160,44 @@ async function loadPointCloudAndColor(frameIdx, callback) {
   }
 }
 
+async function preloadFrames(startFrame, numFrames) {
+  const sceneName = SCENES[currentSceneIdx];
+  const metadata = await loadSceneMetadata(sceneName);
+  const maxFrame = metadata.numFrames - 1;
+  
+  // Clear any existing preload requests
+  preloadQueue = [];
+  
+  // Create array of frames to preload
+  const framesToLoad = [];
+  for (let i = 1; i <= numFrames; i++) {
+    const frame = startFrame + i;
+    if (frame <= maxFrame && !globalCache[sceneName]?.[frame]) {
+      framesToLoad.push(frame);
+    }
+  }
+  
+  // Load frames in parallel
+  const loadPromises = framesToLoad.map(frame => 
+    new Promise((resolve) => {
+      loadPointCloudAndColor(frame, (points, colors) => {
+        if (points && colors) {
+          globalCache[sceneName][frame] = { points, colors };
+        }
+        resolve();
+      });
+    })
+  );
+  
+  // Add to preload queue
+  preloadQueue.push(Promise.all(loadPromises));
+}
+
 function showPointCloudForFrame(frameIdx, onFirstFrameLoaded) {
   requestVersion++;
   const thisRequest = requestVersion;
   const sceneName = SCENES[currentSceneIdx];
+  
   if (!globalCache[sceneName]) {
     loadSceneMetadata(sceneName).then(metadata => {
       globalCache[sceneName] = new Array(metadata.numFrames).fill(null);
@@ -177,6 +213,11 @@ function showPointCloudForFrame(frameIdx, onFirstFrameLoaded) {
       loadedPointClouds[frameIdx] = { points, colors };
       createPointCloud(points, colors);
       if (onFirstFrameLoaded) onFirstFrameLoaded();
+      
+      // Start preloading next frames
+      if (isPlaying) {
+        preloadFrames(frameIdx, PRELOAD_FRAMES);
+      }
     } else {
       loadPointCloudAndColor(frameIdx, (points, colors) => {
         if (thisRequest !== requestVersion) return;
@@ -184,6 +225,11 @@ function showPointCloudForFrame(frameIdx, onFirstFrameLoaded) {
         loadedPointClouds[frameIdx] = { points, colors };
         createPointCloud(points, colors);
         if (onFirstFrameLoaded) onFirstFrameLoaded();
+        
+        // Start preloading next frames
+        if (isPlaying) {
+          preloadFrames(frameIdx, PRELOAD_FRAMES);
+        }
       });
     }
   }
