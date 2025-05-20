@@ -46,9 +46,9 @@ function initScene() {
   // camera.position.z = 3;
 
   // Set camera at the origin, looking along +z, x right, y down
-  camera.position.set(0, -0.05, -0.2);
+  camera.position.set(-0.2, -0.2, 0.2);
   camera.up.set(0, -1, 0); // y down
-  camera.lookAt(new THREE.Vector3(0, 0, 0.2));
+  camera.lookAt(new THREE.Vector3(0, 0, 0.025));
 
   // Add TrackballControls for full 3D rotation
   // controls = new OrbitControls(camera, renderer.domElement);
