@@ -4,10 +4,10 @@ import { TrackballControls } from 'https://unpkg.com/three@0.126.1/examples/jsm/
 
 let scene, camera, renderer, pointCloud, controls;
 const SCENES = [
-  'tesla_0'
-  // 'figure_1_pcs',
-  // 'figure_2_pcs',
-  // 'figure_3'
+  'tesla_0',
+  'figure_1_pcs',
+  'figure_2_pcs',
+  'figure_3'
 ];
 let currentSceneIdx = 0;
 let loadedPointClouds = [];
